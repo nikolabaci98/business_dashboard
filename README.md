@@ -1,1 +1,3 @@
-# business_dashboard
+# Business Dashboard
+
+![Watch the video](walkthrough.gif)
