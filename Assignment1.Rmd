@@ -1,0 +1,311 @@
+---
+title: "License Applications in NYC Analysis"
+author: "Nikola Baci"
+date: "2023-02-02"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(lubridate)
+library(plotly)
+library(gt)
+library(forecast)
+options(dplyr.summarise.inform = FALSE)
+```
+
+
+# Introduction
+## Data
+In this notebook you will be presented with an exploratory analysis of the
+license applications in the NYC metropolitan area.
+The data is downloaded from NYC Open Data and it could be found [here](https://data.cityofnewyork.us/Business/License-Applications/ptev-4hud).
+
+## Business Owner
+If you want to to open a business and you would like to be one step ahead of your
+competition, then this analysis is for your. Here you will find out how long 
+on average would take for your to get your license, where your competition is
+located, how far has your industry has grown and a forecast on where the 
+direction of this growth in the next 2 years.
+
+## DCWP
+This analysis is also intended to help the Department of Consumer and Worker
+Protection (DCWP) on creating an overview of their data and improve their daily and
+seasonal operations.
+
+# Data and Methods
+
+The data set is retrieved from NYC Open Data which is an evolving set as DCWP is
+updating it weekly. The data set was made available at first in January 2016 and
+has grown into almost half a million cases. The data set has over 25 features
+(columns) but the columns that I paid the most interest in are the license category,
+date the license was issued as well as the geo-location of the businesses.
+
+This analysis is primary descriptive with the main focus being the understanding 
+patterns and gathering insights on past observations. At the end you will also
+find a forecasting model for the next 2 years.
+
+# Analysis, Results and Interpretations
+## Import the data
+
+The zipcode data is to provide a unified pairing between zipcode and county because 
+counties differ depending on what the applicant wrote which might not be correct.
+
+We also do some cleaning of the column names and subset the data.
+The data that we will focus is all the licenses that are issued in the 5 boroughs
+in NYC.
+
+```{r Data-Import}
+
+license_applications <-  read.csv("data.csv")
+zipcodes <- read.csv("zipcodes.csv")
+
+names(zipcodes) <- tolower(gsub("[.]", "_", names(zipcodes)))
+zipcodes <- rename(zipcodes, zip = zip_code, city = common_cities)
+zipcodes$zip <- as.character(zipcodes$zip)
+
+
+df_orig <- license_applications
+
+df_orig <- df_orig %>%
+  select(Application.ID:End.Date, License.Category, Application.Category, City:Latitude)
+
+#change names
+names(df_orig) <- tolower(gsub("[.]", "_", names(df_orig)))
+zipcodes <- select(zipcodes, -type)
+
+
+df <- df_orig
+
+#Limit the analysis of only businesses in from NY with an valid issued licence
+df <- df %>%
+  filter(state == "NY") %>%
+  filter(status == "Issued") %>%
+  mutate(contact_phone = case_when(contact_phone == "" ~ NA_character_,
+                                   TRUE ~ contact_phone)) %>%
+  mutate(end_date = mdy(end_date), start_date = mdy(start_date))
+
+# Join the tables and remove duplicated columns
+df <- df %>%
+  left_join(zipcodes, by ="zip") %>%
+  select(-city.x) %>%
+  rename(city = city.y) %>%
+  filter(!duplicated(application_id)) %>%
+  filter(county %in% c("Queens County", "Bronx County","Kings County", "Richmond County", "New York County"))
+
+```
+
+
+## Understanding the dataset
+
+Looking at only the 5 boroughs, the data shrinks by almost 90K observations which 
+are licenses issued on other counties upstate or in Long Island.
+
+About a third (see below) of those observations do not have either contact_phone, and/or longitude,
+and/or latitude data. The last two can be approximated using the full business 
+physical address, but this will be left as an add-on improvement feature.
+
+```{r}
+
+# check for duplicates
+colSums(is.na(df) / nrow(df))
+```
+
+## Top 10 Zipcodes
+Here are 10 zip codes with the most licenses issued. The first-place zip code is located
+in Queens County, while Kings County has more zip codes in the top ten places.
+
+```{r, fig.show='hide', message=FALSE}
+df %>%
+  group_by(zip, county) %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  arrange(desc(count)) %>%
+  top_n(10) %>% 
+  ggplot() +
+  geom_col(aes(fct_reorder(zip, count), count)) +
+  coord_flip() +
+  theme_bw() +
+  ylab("Count") +
+  xlab("Zips") +
+  ggtitle("Top 10 zipcodes by number of applications")
+
+```
+
+### Fig: Top 10 Zip Codes
+![Top 10 zips](www/topzips.png)
+
+
+
+## Overall Distribution
+
+Investigating the total number of issued licenses over the years, we see an
+enormous jump from 2013 with roughly 10,000 licenses to 2014 with almost 40,000
+licenses issued. Did people become more entrepreneurial in just one year? Or is this
+some anomaly with the data?
+
+```{r, fig.show='hide'}
+df %>%
+  ggplot() +
+  geom_bar(aes(year(end_date))) +
+  theme_bw() +
+  xlab("Year") +
+  ylab("Count") +
+  ggtitle("Number of Applications 2000-2023")
+  
+```
+
+### Fig: Distribution
+![Overall distribution](www/alldist.png)
+
+
+## What is going on?
+
+As you can see from the table below, the majority of the licenses issued before 2014
+regarded the Tobacco shops, and the rest of the categories had very little records.
+
+Either NY passed a law that required businesses to have a license to operate (a hypothesis
+I could not prove due to the lack of information online) or New Yorkers embarked on what
+seems to be an entrepreneurial journey that continues to thrive despite Covid-19 pandemic.
+However, the second option is highly unlikely due to very low number and limited categories
+as seen in the table
+
+```{r}
+df %>%
+  filter(year(end_date) < 2014) %>% 
+  group_by(license_category) %>%
+  summarise(count = n()) %>%
+  f
+```
+
+
+## Processing Time
+
+The Department of Consumer and Worker Protection (DCWP) seems to be very
+efficient with the applications since half of the applications are closed
+only one day after the application is submitted, 75% of applications are 
+closed not later than 3 days, and 98.5% of all the applications is closed 
+within 3 months.
+
+By looking at the table below, we can see in descending order the license 
+categories that take the most time to get processed and issued. 
+
+Pedicab businesses take the most time on average to get a license with about 
+34-35 days to get a license. The second category that takes the longest for a 
+license issued are the Tow Truck companies at 31 days and then the Car Wash 
+businesses at 17 days. 
+
+This time is highly possible to be due to applicant submitting an incomplete
+application and need to retain those documents before the license is issued.
+
+```{r}
+# create the data frame
+period <- df %>%
+  filter(end_date >= start_date) %>% #some data have a end_date before start_date
+  filter(year(end_date) > 2013) %>% #only look at data from 2014 and on
+  mutate(days = as.integer(end_date - start_date)) #calculate the days
+
+# Quartiles and min/max
+summary(period$days)
+
+# % of issued licenses before 3 months = 98.5%
+nrow(filter(period, days < 90)) / nrow(period)
+
+# table the top 10 slowest
+period %>%
+  group_by(license_category) %>%
+  summarise(days = median(days)) %>%
+  arrange(desc(days)) %>%
+  top_n(10) %>%
+  gt()
+
+```
+
+## Distribution for every year
+
+Below are the graphs from 2014 to 2022 with the total applications submitted for
+each month (bars-left y axis) and the average timeto process for each month 
+(red line - right y axis). Generally,the distributions are bimodal, which lets 
+us know that the winter months are the busiest for the DCWP.
+
+
+```{r, fig.show='hide'}
+over_months <- df %>%
+  filter(year(start_date) > 2013, year(start_date) < 2023) %>%
+  mutate(year = year(start_date), month = month(start_date, label = T)) %>%
+  mutate(days = as.integer(end_date - start_date)) %>%
+  filter(days > 0) %>%
+  group_by(year, month) %>%
+  summarise(count = n(), avg = mean(days)) %>%
+  ungroup()
+
+
+over_months %>%
+  ggplot() +
+  geom_col(aes(x = month, y = count)) +
+  geom_line(aes(x = month, y = avg * 100 , group = 1), color = "red") +
+  scale_y_continuous("Applications Count", 
+                     breaks = seq(0, 10000, 2000),
+                     sec.axis = sec_axis(~ . /100, name = "Average Days")) +
+  facet_wrap(~year) +
+  theme_bw() +
+  xlab("Month") +
+  ggtitle("Year by Year Distribution and Average Processing Time") +
+  theme(axis.text.x = element_text(angle = 45))
+```
+
+### Fig: Distributions
+![Distributions by year](www/inddist.png)
+
+## Forecasting Until 2025
+
+In this last analysis piece, I fit the data through the Holt-Winter's exponential
+smoothing forecasting model with the indent to capture the number of applications
+in the next 2 years to come. The solid blue line represents the mean, the dark
+purple area indicates 50% confidence interval and the lighter purple area 
+indicates 90% confidence interval.
+
+```{r, fig.show='hide', message==FALSE}
+dates <- df %>%
+  filter(year(end_date) > 2013) %>%
+  group_by(year(end_date), month(end_date)) %>%
+  summarise(count = n())
+
+dfts <- ts(dates[, 3], start = c(2014, 0), frequency = 12)
+
+autoplot(hw(dfts, h = 24, seasonal = "multiplicative", level = c(50, 90))) +
+  theme_bw() +
+  xlab("Time") +
+  ylab("Application Count") +
+  ggtitle("Forecast For The Next 2 Years ")
+  
+```
+### Fig: Forecast
+![Forecast](www/forecast.png)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
